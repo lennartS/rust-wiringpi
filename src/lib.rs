@@ -4,7 +4,7 @@ extern crate libc;
 
 use std::marker::PhantomData;
 
-use pin::{Pin, Pwm, GpioClock};
+use pin::{Pin, Pwm, GpioClock, RequiresRoot};
 
 macro_rules! impl_pins {
     ($($name:ident),+) => (
@@ -208,6 +208,11 @@ pub mod pin {
             let InputPin(number, _) = self;
             OutputPin::new(number)
         }
+
+        pub fn into_soft_pwm(self) -> SoftPwmPin<P> {
+            let InputPin(number, _) = self;
+            SoftPwmPin::new(number)
+        }
     }
 
     impl<P: Pin + Pwm> InputPin<P> {
@@ -221,6 +226,91 @@ pub mod pin {
         pub fn into_clock(self) -> ClockPin<P> {
             let InputPin(number, _) = self;
             ClockPin::new(number)
+        }
+    }
+
+    pub struct SoftPwmPin<Pin>(libc::c_int, PhantomData<Pin>);
+
+    impl<P: Pin + RequiresRoot> SoftPwmPin<P> {
+        /// Creates a new software PWM controlled pin.
+        ///
+        /// Due to limitations of the chip only one pin is able to do
+        /// hardware-controlled PWM output. The `SoftPwmPin`s on the
+        /// other hand allow for all GPIOs to output PWM signals.
+        ///
+        /// The pulse width of the signal will be 100μs with a value range
+        /// of [0,100] (where `0` is a constant low and `100` is a
+        /// constant high) resulting in a frequenzy of 100 Hz.
+        ///
+        /// **Important**: In order to use software PWM pins *wiringPi*
+        /// has to be setup in GPIO mode (setup_gpio()).
+        pub fn new(pin: libc::c_int) -> SoftPwmPin<P> {
+            unsafe {
+                bindings::softPwmCreate(pin, 0, 100);
+            }
+
+            SoftPwmPin(pin, PhantomData)
+        }
+
+        #[inline]
+        pub fn number(&self) -> libc::c_int {
+            let &SoftPwmPin(number, _) = self;
+            number
+        }
+
+        /// Sets the duty cycle.
+        ///
+        /// `value` has to be in the interval [0,100].
+        pub fn pwm_write(&self, value: libc::c_int) {
+            unsafe {
+                bindings::softPwmWrite(self.number(), value);
+            }
+        }
+
+        pub fn into_input(self) -> InputPin<P> {
+            let SoftPwmPin(number, _) = self;
+            unsafe {
+                bindings::softPwmStop(number);
+            }
+            InputPin::new(number)
+        }
+
+        pub fn into_output(self) -> OutputPin<P> {
+            let SoftPwmPin(number, _) = self;
+            unsafe {
+                bindings::softPwmStop(number);
+            }
+            OutputPin::new(number)
+        }
+
+    }
+
+    impl<P: Pin + Pwm> SoftPwmPin<P> {
+        pub fn into_pwm(self) -> PwmPin<P> {
+            let SoftPwmPin(number, _) = self;
+            unsafe {
+                bindings::softPwmStop(number);
+            }
+            PwmPin::new(number)
+        }
+    }
+
+    impl<P: Pin + GpioClock> SoftPwmPin<P> {
+        pub fn into_clock(self) -> ClockPin<P> {
+            let SoftPwmPin(number, _) = self;
+            unsafe {
+                bindings::softPwmStop(number);
+            }
+            ClockPin::new(number)
+        }
+    }
+
+    impl Drop for SoftPwmPin<P> {
+        fn drop(&mut self) {
+            let SoftPwmPin(number, _) = self;
+            unsafe {
+                bindings::softPwmStop(number);
+            }
         }
     }
 
@@ -255,6 +345,14 @@ pub mod pin {
             unsafe {
                 bindings::analogWrite(self.number(), value as libc::c_int);
             }
+        }
+
+    }
+
+    impl<P: Pin + RequiresRoot> OutputPin<P> {
+        pub fn into_soft_pwm(self) -> SoftPwmPin<P> {
+            let OutputPin(number, _) = self;
+            SoftPwmPin::new(number)
         }
     }
 
@@ -305,6 +403,11 @@ pub mod pin {
         pub fn into_output(self) -> OutputPin<P> {
             let PwmPin(number, _) = self;
             OutputPin::new(number)
+        }
+
+        pub fn into_soft_pwm(self) -> SoftPwmPin<P> {
+            let PwmPin(number, _) = self;
+            SoftPwmPin::new(number)
         }
 
         ///Writes the value to the PWM register for the given pin.
@@ -367,6 +470,11 @@ pub mod pin {
         pub fn into_output(self) -> OutputPin<P> {
             let ClockPin(number, _) = self;
             OutputPin::new(number)
+        }
+
+        pub fn into_soft_pwm(self) -> SoftPwmPin<P> {
+            let ClockPin(number, _) = self;
+            SoftPwmPin::new(number)
         }
 
         ///Set the freuency on a GPIO clock pin.
@@ -493,5 +601,12 @@ impl<P: Pwm + Pin> WiringPi<P> {
 impl<P: GpioClock + Pin> WiringPi<P> {
     pub fn clock_pin(&self) -> pin::ClockPin<P> {
         GpioClock::clock_pin()
+    }
+}
+
+impl<P: Pin + RequiresRoot> WiringPi<P> {
+    pub fn soft_pwm_pin(&self, pin: u16) -> pin::SoftPwmPin<P> {
+        let pin = pin as libc::c_int;
+        pin::SoftPwmPin::new(pin)
     }
 }
